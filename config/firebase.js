@@ -25,23 +25,78 @@ try {
     
     const hasProjectId = process.env.FIREBASE_PROJECT_ID;
 
-    console.log('Firebase initialization check:');
-    console.log('  - Has private key:', !!hasPrivateKey);
-    console.log('  - Has client email:', !!hasClientEmail);
-    console.log('  - Has project ID:', !!hasProjectId);
-
-    if (hasPrivateKey && hasClientEmail && hasProjectId) {
+    // Check if full service account JSON is provided (easier for Railway)
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    
+    if (serviceAccountJson) {
+      try {
+        console.log('Using FIREBASE_SERVICE_ACCOUNT_JSON...');
+        const serviceAccount = JSON.parse(serviceAccountJson);
+        admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount),
+        });
+        adminInitialized = true;
+        db = admin.firestore();
+        console.log('✅ Firebase Admin SDK initialized successfully with service account JSON');
+      } catch (jsonError) {
+        console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', jsonError.message);
+        throw jsonError;
+      }
+    } else if (hasPrivateKey && hasClientEmail && hasProjectId) {
       console.log('Initializing Firebase Admin SDK with service account credentials...');
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-        }),
-      });
-      adminInitialized = true;
-      db = admin.firestore();
-      console.log('✅ Firebase Admin SDK initialized successfully with credentials');
+      
+      // Parse private key - handle different formats
+      let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+      
+      // Remove surrounding quotes if present
+      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+        privateKey = privateKey.slice(1, -1);
+      }
+      if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
+        privateKey = privateKey.slice(1, -1);
+      }
+      
+      // Replace escaped newlines with actual newlines
+      // Handle both \\n (double escaped) and \n (single escaped)
+      privateKey = privateKey.replace(/\\n/g, '\n');
+      
+      // Also handle if Railway stored it with actual newlines
+      // If it doesn't have BEGIN/END markers on same line, it might have real newlines
+      if (!privateKey.includes('BEGIN PRIVATE KEY') && !privateKey.includes('BEGIN PRIVATE KEY')) {
+        // Try to find if it's base64 encoded
+        try {
+          privateKey = Buffer.from(privateKey, 'base64').toString('utf-8');
+        } catch (e) {
+          // Not base64, continue
+        }
+      }
+      
+      // Ensure the key starts and ends with proper markers
+      if (!privateKey.includes('BEGIN PRIVATE KEY')) {
+        console.error('❌ Private key format invalid - missing BEGIN PRIVATE KEY');
+        console.error('Key preview:', privateKey.substring(0, 100));
+        throw new Error('Invalid private key format - see RAILWAY_SETUP.md for help');
+      }
+      
+      try {
+        admin.initializeApp({
+          credential: admin.credential.cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: privateKey,
+          }),
+        });
+        adminInitialized = true;
+        db = admin.firestore();
+        console.log('✅ Firebase Admin SDK initialized successfully with credentials');
+      } catch (certError) {
+        console.error('❌ Failed to initialize Firebase with credentials:', certError.message);
+        console.error('Private key length:', privateKey.length);
+        console.error('Private key preview (first 50 chars):', privateKey.substring(0, 50));
+        console.error('Private key preview (last 50 chars):', privateKey.substring(Math.max(0, privateKey.length - 50)));
+        console.error('\n💡 Tip: Try using FIREBASE_SERVICE_ACCOUNT_JSON instead (see RAILWAY_SETUP.md)');
+        throw certError;
+      }
     } else {
       console.warn('⚠️  Firebase service account credentials not found!');
       console.warn('   Please set FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL, and FIREBASE_PROJECT_ID in .env');
